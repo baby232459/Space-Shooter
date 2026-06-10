@@ -1,0 +1,1118 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Space Shooter</title>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#000000">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{width:100%;height:100%;overflow:hidden;background:#000}
+canvas{
+  display:block;
+  position:fixed;
+  top:50%;left:50%;
+  transform-origin:top left;
+  touch-action:none;
+}
+</style>
+</head>
+<body>
+<canvas id="game" width="400" height="650"></canvas>
+<script>
+const c=document.getElementById("game");
+const ctx=c.getContext("2d");
+
+// ─── RESPONSIVE SCALING ───────────────────────────────────────────────────────
+const W=400, H=650;
+function resize(){
+  const sw=window.innerWidth/W, sh=window.innerHeight/H;
+  const scale=sw;
+  c.style.transform=`translate(-50%,-50%) scale(${scale})`;
+}
+resize();
+window.addEventListener("resize",resize);
+
+function getCanvasPos(e){
+  const r=c.getBoundingClientRect();
+  const t=e.touches?e.touches[0]:e;
+  const cx=(t.clientX-r.left)*(W/r.width);
+  const cy=(t.clientY-r.top)*(H/r.height);
+  return {cx,cy};
+}
+
+// ─── LEVEL DEFINITIONS ───────────────────────────────────────────────────────
+const LEVELS=[
+  {num:1, name:"Sector 1",     color:"#4af",  killsNeeded:35,  spawnRate:1800, enemySpeed:0.5, bigChance:0.1, tankChance:0.0, bossHp:90,  bossColor:"#e44", bossName:"Grunt Leader"},
+  {num:2, name:"Nebula Belt",  color:"#fa4",  killsNeeded:45,  spawnRate:1500, enemySpeed:0.6, bigChance:0.2, tankChance:0.0, bossHp:150, bossColor:"#e84", bossName:"Nebula Warden"},
+  {num:3, name:"Ice Fields",   color:"#8ef",  killsNeeded:55,  spawnRate:1300, enemySpeed:0.7, bigChance:0.25,tankChance:0.05,bossHp:225, bossColor:"#8ef", bossName:"Frost Titan"},
+  {num:4, name:"Lava Cluster", color:"#f64",  killsNeeded:65,  spawnRate:1200, enemySpeed:0.8, bigChance:0.3, tankChance:0.1, bossHp:300, bossColor:"#f64", bossName:"Magma Beast"},
+  {num:5, name:"Dark Void",    color:"#a4f",  killsNeeded:80,  spawnRate:1100, enemySpeed:0.9, bigChance:0.3, tankChance:0.15,bossHp:390, bossColor:"#a4f", bossName:"Void Phantom"},
+  {num:6, name:"Storm Zone",   color:"#ff4",  killsNeeded:95,  spawnRate:950,  enemySpeed:1.0, bigChance:0.35,tankChance:0.2, bossHp:495, bossColor:"#ff4", bossName:"Storm Colossus"},
+  {num:7, name:"Inferno Core", color:"#f44",  killsNeeded:115, spawnRate:800,  enemySpeed:1.1, bigChance:0.4, tankChance:0.25,bossHp:630, bossColor:"#f44", bossName:"Inferno Reaper"},
+  {num:8, name:"Final Nexus",  color:"#fff",  killsNeeded:140, spawnRate:650,  enemySpeed:1.3, bigChance:0.45,tankChance:0.3, bossHp:825, bossColor:"#fff", bossName:"THE NEXUS GOD"},
+];
+
+// ─── STATE ────────────────────────────────────────────────────────────────────
+let state="menu";
+let currentLevel=0;
+let score=0, kills=0;
+let bossWarningTimer=0;
+let ship, bullets, enemies, boss, bossPhase;
+let fireLoop=null, spawnLoop=null;
+let lives=3;
+let respawning=false;
+let respawnTimer=0;
+let invincible=false;
+let invincibleTimer=0;
+const upBtn={x:220,y:614,w:170,h:32};
+
+// ─── MENU BUTTONS ─────────────────────────────────────────────────────────────
+const menuButtons=[];
+for(let i=0;i<8;i++){
+  const col=i%2, row=Math.floor(i/2);
+  menuButtons.push({x:18+col*192, y:155+row*118, w:172, h:108, idx:i});
+}
+
+// ─── INIT GAME ────────────────────────────────────────────────────────────────
+function initGame(levelIdx){
+  currentLevel=levelIdx;
+  score=0; kills=0;
+  lives=3;
+  respawning=false; respawnTimer=0;
+  invincible=false; invincibleTimer=0;
+  bullets=[]; enemies=[]; boss=null; bossPhase=0;
+  ship={x:200,y:565,size:15,level:1,fireRate:250};
+  state="game";
+  startFireLoop();
+  startSpawnLoop();
+}
+
+function startFireLoop(){
+  if(fireLoop) clearInterval(fireLoop);
+  fireLoop=setInterval(()=>{
+    if(state!=="game" && state!=="boss") return;
+    bullets.push({x:ship.x,y:ship.y,type:"player"});
+    if(ship.level>=2) bullets.push({x:ship.x-12,y:ship.y,type:"player"});
+    if(ship.level>=3) bullets.push({x:ship.x+12,y:ship.y,type:"player"});
+    if(ship.level>=4){ bullets.push({x:ship.x-22,y:ship.y,type:"player"}); bullets.push({x:ship.x+22,y:ship.y,type:"player"}); }
+  }, Math.max(60,250-(ship.level-1)*40));
+}
+
+function startSpawnLoop(){
+  if(spawnLoop) clearInterval(spawnLoop);
+  const lvl=LEVELS[currentLevel];
+  spawnLoop=setInterval(()=>{
+    if(state!=="game") return;
+    const r=Math.random();
+    let hp,max,w,h,s,col,type;
+    if(r<(1-lvl.bigChance-lvl.tankChance)){
+      hp=3;max=3;w=20;h=20;s=lvl.enemySpeed;col="red";type="small";
+    } else if(r<(1-lvl.tankChance)){
+      hp=9;max=9;w=30;h=30;s=lvl.enemySpeed*0.75;col="orange";type="medium";
+    } else {
+      hp=24;max=24;w=50;h=50;s=lvl.enemySpeed*0.45;col="purple";type="tank";
+    }
+    enemies.push({x:Math.random()*(380-w),y:-h-5,w,h,hp,max,s,col,type});
+  }, lvl.spawnRate);
+}
+
+function resetFire(){
+  if(fireLoop) clearInterval(fireLoop);
+  fireLoop=setInterval(()=>{
+    if(state!=="game" && state!=="boss") return;
+    bullets.push({x:ship.x,y:ship.y,type:"player"});
+    if(ship.level>=2) bullets.push({x:ship.x-12,y:ship.y,type:"player"});
+    if(ship.level>=3) bullets.push({x:ship.x+12,y:ship.y,type:"player"});
+    if(ship.level>=4){ bullets.push({x:ship.x-22,y:ship.y,type:"player"}); bullets.push({x:ship.x+22,y:ship.y,type:"player"}); }
+  }, Math.max(60,250-(ship.level-1)*40));
+}
+
+// ─── INPUT ────────────────────────────────────────────────────────────────────
+function onMove(e){
+  if(state!=="game" && state!=="boss") return;
+  const {cx,cy}=getCanvasPos(e);
+  ship.x=Math.max(20,Math.min(380,cx));
+  ship.y=Math.max(20,Math.min(630,cy));
+}
+
+function onTap(e){
+  const {cx,cy}=getCanvasPos(e.changedTouches?{touches:e.changedTouches}:e);
+  if(state==="menu"){
+    menuButtons.forEach(btn=>{
+      if(cx>btn.x && cx<btn.x+btn.w && cy>btn.y && cy<btn.y+btn.h) initGame(btn.idx);
+    });
+    return;
+  }
+  if(state==="gameover"||state==="victory"){
+    if(cx>120&&cx<280&&cy>380&&cy<430) state="menu";
+    return;
+  }
+  if(state==="levelclear"){
+    if(cx>120&&cx<280&&cy>380&&cy<430){
+      if(currentLevel+1>=LEVELS.length) state="victory";
+      else initGame(currentLevel+1);
+    }
+    return;
+  }
+  if((state==="game"||state==="boss")&&cx>upBtn.x&&cx<upBtn.x+upBtn.w&&cy>upBtn.y&&cy<upBtn.y+upBtn.h) tryUpgrade();
+}
+
+c.addEventListener("mousemove",onMove);
+c.addEventListener("touchmove",onMove,{passive:true});
+c.addEventListener("click",onTap);
+c.addEventListener("touchend",onTap,{passive:true});
+document.addEventListener("keydown",e=>{ if(e.key.toLowerCase()==="u") tryUpgrade(); });
+
+// ─── UPGRADE ──────────────────────────────────────────────────────────────────
+function canAfford(){ return score>=ship.level*20 && ship.level<5; }
+function tryUpgrade(){
+  if(state!=="game"&&state!=="boss") return;
+  const cost=ship.level*20;
+  if(score>=cost&&ship.level<5){ score-=cost; ship.level++; ship.size+=3; resetFire(); }
+}
+
+// ─── DRAW HELPERS ─────────────────────────────────────────────────────────────
+function drawStars(){
+  ctx.fillStyle="white";
+  for(let i=0;i<120;i++)
+    ctx.fillRect((i*71)%400,(i*41+performance.now()/30)%650,2,2);
+}
+
+// ─── RETRO SPACE FIGHTER ──────────────────────────────────────────────────────
+function drawShip(){
+  if(respawning) return;
+  if(invincible && Math.floor(invincibleTimer/6)%2===0) return;
+
+  const x=ship.x, y=ship.y, s=ship.size;
+  ctx.save();
+  ctx.globalAlpha=invincible?0.7:1;
+
+  // Engine glow / thruster flame
+  const flicker=0.7+Math.sin(performance.now()/60)*0.3;
+  ctx.shadowColor="#f80"; ctx.shadowBlur=12*flicker;
+  ctx.fillStyle=`rgba(255,${Math.floor(140*flicker)},0,0.9)`;
+  ctx.beginPath();
+  ctx.moveTo(x-s*0.35, y+s*0.7);
+  ctx.lineTo(x, y+s*1.5*flicker);
+  ctx.lineTo(x+s*0.35, y+s*0.7);
+  ctx.fill();
+  ctx.shadowBlur=0;
+
+  // Wing left
+  ctx.fillStyle="#1a6aaa";
+  ctx.strokeStyle="#4af"; ctx.lineWidth=1;
+  ctx.beginPath();
+  ctx.moveTo(x-s*0.2, y+s*0.2);
+  ctx.lineTo(x-s*1.1, y+s*0.9);
+  ctx.lineTo(x-s*0.9, y+s*1.0);
+  ctx.lineTo(x-s*0.15, y+s*0.55);
+  ctx.closePath(); ctx.fill(); ctx.stroke();
+
+  // Wing right
+  ctx.beginPath();
+  ctx.moveTo(x+s*0.2, y+s*0.2);
+  ctx.lineTo(x+s*1.1, y+s*0.9);
+  ctx.lineTo(x+s*0.9, y+s*1.0);
+  ctx.lineTo(x+s*0.15, y+s*0.55);
+  ctx.closePath(); ctx.fill(); ctx.stroke();
+
+  // Main fuselage
+  ctx.shadowColor="cyan"; ctx.shadowBlur=invincible?18:6;
+  ctx.fillStyle="#0cf";
+  ctx.beginPath();
+  ctx.moveTo(x, y-s);           // nose
+  ctx.lineTo(x-s*0.35, y+s*0.2);
+  ctx.lineTo(x-s*0.2, y+s*0.7);
+  ctx.lineTo(x+s*0.2, y+s*0.7);
+  ctx.lineTo(x+s*0.35, y+s*0.2);
+  ctx.closePath(); ctx.fill(); ctx.stroke();
+
+  // Cockpit window
+  ctx.fillStyle="#003344";
+  ctx.strokeStyle="#88eeff"; ctx.lineWidth=0.8;
+  ctx.beginPath();
+  ctx.ellipse(x, y-s*0.15, s*0.18, s*0.28, 0, 0, Math.PI*2);
+  ctx.fill(); ctx.stroke();
+
+  // Nose tip accent
+  ctx.fillStyle="#fff";
+  ctx.beginPath();
+  ctx.ellipse(x, y-s*0.9, s*0.07, s*0.12, 0, 0, Math.PI*2);
+  ctx.fill();
+
+  // Wing tip guns
+  ctx.fillStyle="#adf";
+  ctx.strokeStyle="#4af"; ctx.lineWidth=0.8;
+  ctx.fillRect(x-s*1.05-2, y+s*0.55, 4, s*0.5);
+  ctx.strokeRect(x-s*1.05-2, y+s*0.55, 4, s*0.5);
+  ctx.fillRect(x+s*1.05-2, y+s*0.55, 4, s*0.5);
+  ctx.strokeRect(x+s*1.05-2, y+s*0.55, 4, s*0.5);
+
+  ctx.shadowBlur=0;
+  ctx.restore();
+}
+
+// ─── RETRO ALIEN DRAWINGS ─────────────────────────────────────────────────────
+// Small alien: classic Space Invaders-style bug (20x20)
+function drawSmallAlien(x, y, col){
+  const t=performance.now();
+  // Animate legs every 400ms
+  const legPhase=Math.floor(t/400)%2;
+  ctx.save();
+  ctx.shadowColor=col; ctx.shadowBlur=6;
+
+  // Body
+  ctx.fillStyle=col;
+  ctx.strokeStyle="#fff"; ctx.lineWidth=0.7;
+  // Main dome
+  ctx.beginPath();
+  ctx.arc(x+10, y+9, 6, Math.PI, 0);
+  ctx.lineTo(x+16, y+14);
+  ctx.lineTo(x+4, y+14);
+  ctx.closePath(); ctx.fill(); ctx.stroke();
+
+  // Eyes
+  ctx.fillStyle="#000";
+  ctx.fillRect(x+5, y+9, 3, 3);
+  ctx.fillRect(x+12, y+9, 3, 3);
+  ctx.fillStyle="#fff";
+  ctx.fillRect(x+6, y+10, 1, 1);
+  ctx.fillRect(x+13, y+10, 1, 1);
+
+  // Antennae
+  ctx.strokeStyle=col; ctx.lineWidth=1.5;
+  ctx.beginPath(); ctx.moveTo(x+7, y+3); ctx.lineTo(x+5, y); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x+13, y+3); ctx.lineTo(x+15, y); ctx.stroke();
+  ctx.fillStyle=col;
+  ctx.fillRect(x+4, y-1, 3, 2);
+  ctx.fillRect(x+13, y-1, 3, 2);
+
+  // Legs (animated)
+  ctx.strokeStyle=col; ctx.lineWidth=1.5;
+  if(legPhase===0){
+    ctx.beginPath(); ctx.moveTo(x+5, y+14); ctx.lineTo(x+2, y+18); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x+10, y+14); ctx.lineTo(x+10, y+19); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x+15, y+14); ctx.lineTo(x+18, y+18); ctx.stroke();
+  } else {
+    ctx.beginPath(); ctx.moveTo(x+5, y+14); ctx.lineTo(x+3, y+17); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x+10, y+14); ctx.lineTo(x+9, y+19); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x+15, y+14); ctx.lineTo(x+17, y+17); ctx.stroke();
+  }
+
+  ctx.shadowBlur=0;
+  ctx.restore();
+}
+
+// Medium alien: crab-like creature (30x30)
+function drawMediumAlien(x, y, col){
+  const t=performance.now();
+  const clawPhase=Math.floor(t/350)%2;
+  ctx.save();
+  ctx.shadowColor=col; ctx.shadowBlur=8;
+
+  // Body oval
+  ctx.fillStyle=col;
+  ctx.strokeStyle="#ffdd88"; ctx.lineWidth=1;
+  ctx.beginPath();
+  ctx.ellipse(x+15, y+14, 10, 8, 0, 0, Math.PI*2);
+  ctx.fill(); ctx.stroke();
+
+  // Shell stripes
+  ctx.strokeStyle="rgba(0,0,0,0.35)"; ctx.lineWidth=1.5;
+  for(let i=0;i<3;i++){
+    ctx.beginPath();
+    ctx.ellipse(x+15, y+14, 10-(i*3), 8-(i*2.5), 0, 0, Math.PI);
+    ctx.stroke();
+  }
+
+  // Big compound eyes
+  ctx.fillStyle="#111";
+  ctx.beginPath(); ctx.arc(x+9, y+9, 4, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(x+21, y+9, 4, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle="#f00";
+  ctx.beginPath(); ctx.arc(x+9, y+8, 2, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(x+21, y+8, 2, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle="#fff";
+  ctx.fillRect(x+8, y+7, 1, 1);
+  ctx.fillRect(x+20, y+7, 1, 1);
+
+  // Mouth
+  ctx.strokeStyle="#000"; ctx.lineWidth=1;
+  ctx.beginPath(); ctx.arc(x+15, y+18, 3, 0.1*Math.PI, 0.9*Math.PI); ctx.stroke();
+  ctx.fillStyle="#300"; ctx.fill();
+
+  // Claws (animated)
+  ctx.strokeStyle=col; ctx.lineWidth=2;
+  if(clawPhase===0){
+    ctx.beginPath(); ctx.moveTo(x+5, y+14); ctx.lineTo(x, y+10); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x, y+10); ctx.lineTo(x-2, y+7); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x+25, y+14); ctx.lineTo(x+30, y+10); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x+30, y+10); ctx.lineTo(x+32, y+7); ctx.stroke();
+  } else {
+    ctx.beginPath(); ctx.moveTo(x+5, y+14); ctx.lineTo(x-1, y+12); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x-1, y+12); ctx.lineTo(x-3, y+9); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x+25, y+14); ctx.lineTo(x+31, y+12); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x+31, y+12); ctx.lineTo(x+33, y+9); ctx.stroke();
+  }
+
+  // Bottom legs
+  ctx.strokeStyle=col; ctx.lineWidth=1.5;
+  ctx.beginPath(); ctx.moveTo(x+9, y+22); ctx.lineTo(x+6, y+28); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x+15, y+22); ctx.lineTo(x+15, y+29); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x+21, y+22); ctx.lineTo(x+24, y+28); ctx.stroke();
+
+  ctx.shadowBlur=0;
+  ctx.restore();
+}
+
+// Tank alien: big armored mothership bug (50x50)
+function drawTankAlien(x, y, col){
+  const t=performance.now();
+  const pulse=0.7+Math.sin(t/300)*0.3;
+  ctx.save();
+  ctx.shadowColor=col; ctx.shadowBlur=14*pulse;
+
+  // Armour shell
+  ctx.fillStyle="#1a0033";
+  ctx.strokeStyle=col; ctx.lineWidth=2;
+  ctx.beginPath();
+  ctx.moveTo(x+25, y+2);
+  ctx.lineTo(x+45, y+12);
+  ctx.lineTo(x+48, y+32);
+  ctx.lineTo(x+38, y+48);
+  ctx.lineTo(x+12, y+48);
+  ctx.lineTo(x+2, y+32);
+  ctx.lineTo(x+5, y+12);
+  ctx.closePath(); ctx.fill(); ctx.stroke();
+
+  // Inner body
+  ctx.fillStyle=col;
+  ctx.globalAlpha=0.35;
+  ctx.beginPath();
+  ctx.ellipse(x+25, y+26, 16, 14, 0, 0, Math.PI*2);
+  ctx.fill();
+  ctx.globalAlpha=1;
+
+  // Core glowing eye
+  const grd=ctx.createRadialGradient(x+25,y+22,1,x+25,y+22,8);
+  grd.addColorStop(0,"#fff");
+  grd.addColorStop(0.3,col);
+  grd.addColorStop(1,"transparent");
+  ctx.fillStyle=grd;
+  ctx.beginPath(); ctx.arc(x+25, y+22, 8*pulse, 0, Math.PI*2); ctx.fill();
+
+  // Side eyes
+  ctx.fillStyle="#f00";
+  ctx.beginPath(); ctx.arc(x+12, y+20, 4, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(x+38, y+20, 4, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle="#ff8";
+  ctx.beginPath(); ctx.arc(x+12, y+19, 2, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(x+38, y+19, 2, 0, Math.PI*2); ctx.fill();
+
+  // Mandibles
+  ctx.strokeStyle=col; ctx.lineWidth=2.5;
+  ctx.beginPath(); ctx.moveTo(x+15, y+36); ctx.lineTo(x+7, y+44); ctx.lineTo(x+12, y+48); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x+35, y+36); ctx.lineTo(x+43, y+44); ctx.lineTo(x+38, y+48); ctx.stroke();
+
+  // Side spines
+  ctx.strokeStyle=col; ctx.lineWidth=1.5;
+  for(let i=0;i<3;i++){
+    ctx.beginPath(); ctx.moveTo(x+3, y+14+i*8); ctx.lineTo(x-5, y+13+i*8); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x+47, y+14+i*8); ctx.lineTo(x+55, y+13+i*8); ctx.stroke();
+  }
+
+  // Top antenna pair
+  ctx.strokeStyle=col; ctx.lineWidth=1.5;
+  ctx.beginPath(); ctx.moveTo(x+18, y+5); ctx.lineTo(x+13, y-3); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x+32, y+5); ctx.lineTo(x+37, y-3); ctx.stroke();
+  ctx.fillStyle=col;
+  ctx.beginPath(); ctx.arc(x+13, y-3, 2.5, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(x+37, y-3, 2.5, 0, Math.PI*2); ctx.fill();
+
+  // Armour rivets
+  ctx.fillStyle="#fff";
+  [[x+25,y+8],[x+42,y+18],[x+8,y+18],[x+40,y+40],[x+10,y+40]].forEach(([rx,ry])=>{
+    ctx.beginPath(); ctx.arc(rx,ry,1.5,0,Math.PI*2); ctx.fill();
+  });
+
+  ctx.shadowBlur=0;
+  ctx.restore();
+}
+
+function drawEnemy(e){
+  if(e.type==="small") drawSmallAlien(e.x, e.y, e.col);
+  else if(e.type==="medium") drawMediumAlien(e.x, e.y, e.col);
+  else drawTankAlien(e.x, e.y, e.col);
+  // HP bar
+  ctx.fillStyle="rgba(0,0,0,0.5)"; ctx.fillRect(e.x, e.y-7, e.w, 4);
+  ctx.fillStyle="lime"; ctx.fillRect(e.x, e.y-7, e.w*(e.hp/e.max), 4);
+}
+
+function drawUpgradeBtn(){
+  const affordable=canAfford(), maxed=ship.level>=5, cost=ship.level*20;
+  ctx.globalAlpha=0.75;
+  ctx.fillStyle=maxed?"#222":affordable?"#007777":"#003333";
+  ctx.beginPath(); ctx.roundRect(upBtn.x,upBtn.y,upBtn.w,upBtn.h,8); ctx.fill();
+  ctx.globalAlpha=1;
+  ctx.strokeStyle=maxed?"#555":affordable?"#00ffff":"#008888";
+  ctx.lineWidth=2;
+  ctx.beginPath(); ctx.roundRect(upBtn.x,upBtn.y,upBtn.w,upBtn.h,8); ctx.stroke();
+  ctx.fillStyle=maxed?"#888":affordable?"#00ffff":"#00aaaa";
+  ctx.font="bold 13px sans-serif"; ctx.textAlign="center";
+  ctx.fillText(maxed?"⬆ MAX LEVEL":"⬆ UPGRADE ("+cost+" pts)",upBtn.x+upBtn.w/2,upBtn.y+21);
+  ctx.textAlign="left";
+}
+
+function drawHUD(){
+  const lvl=LEVELS[currentLevel];
+  ctx.font="15px sans-serif";
+  ctx.fillStyle="white";
+  ctx.fillText("Score: "+score,10,20);
+  ctx.fillText("Ship Lv: "+ship.level,10,40);
+  ctx.fillStyle=lvl.color; ctx.font="bold 13px sans-serif";
+  ctx.fillText(lvl.name,10,60);
+  if(state==="game"){
+    ctx.fillStyle="white"; ctx.font="12px sans-serif";
+    ctx.fillText("Kills: "+kills+"/"+lvl.killsNeeded,10,76);
+  }
+  ctx.font="18px sans-serif"; ctx.textAlign="right";
+  let hearts="";
+  for(let i=0;i<3;i++) hearts+=(i<lives?"❤️":"🖤");
+  ctx.fillText(hearts,395,22);
+  ctx.textAlign="left";
+
+  if(respawning){
+    const secs=Math.ceil(respawnTimer/60);
+    ctx.fillStyle="rgba(0,0,0,0.45)";
+    ctx.fillRect(0,0,400,650);
+    ctx.textAlign="center";
+    ctx.fillStyle="#f88"; ctx.font="bold 22px sans-serif";
+    ctx.fillText("SHIP DESTROYED",200,290);
+    ctx.fillStyle="#fff"; ctx.font="bold 60px sans-serif";
+    ctx.shadowColor="#f00"; ctx.shadowBlur=20;
+    ctx.fillText(secs,200,370);
+    ctx.shadowBlur=0;
+    ctx.fillStyle="#aaa"; ctx.font="14px sans-serif";
+    ctx.fillText("Respawning...",200,400);
+    ctx.textAlign="left";
+  }
+
+  if(invincible){
+    ctx.textAlign="center";
+    ctx.globalAlpha=Math.min(1,invincibleTimer/30);
+    ctx.fillStyle="#0ff"; ctx.font="bold 13px sans-serif";
+    ctx.fillText("✦ INVINCIBLE ✦",200,580);
+    ctx.globalAlpha=1;
+    ctx.textAlign="left";
+  }
+}
+
+// ─── MENU ─────────────────────────────────────────────────────────────────────
+function drawMenu(){
+  drawStars();
+  ctx.textAlign="center";
+  ctx.fillStyle="#fff"; ctx.font="bold 24px sans-serif";
+  ctx.fillText("🚀 SPACE SHOOTER",200,40);
+  ctx.font="13px sans-serif"; ctx.fillStyle="#aaa";
+  ctx.fillText("Select a level  •  Drag to move  •  U = Upgrade",200,62);
+
+  menuButtons.forEach(btn=>{
+    const lvl=LEVELS[btn.idx];
+    ctx.shadowColor=lvl.color; ctx.shadowBlur=12;
+    ctx.fillStyle="#111";
+    ctx.beginPath(); ctx.roundRect(btn.x,btn.y,btn.w,btn.h,10); ctx.fill();
+    ctx.strokeStyle=lvl.color; ctx.lineWidth=2;
+    ctx.beginPath(); ctx.roundRect(btn.x,btn.y,btn.w,btn.h,10); ctx.stroke();
+    ctx.shadowBlur=0;
+    ctx.fillStyle=lvl.color; ctx.font="bold 15px sans-serif";
+    ctx.fillText("Level "+lvl.num,btn.x+btn.w/2,btn.y+28);
+    ctx.fillStyle="#ccc"; ctx.font="13px sans-serif";
+    ctx.fillText(lvl.name,btn.x+btn.w/2,btn.y+50);
+    const stars="★".repeat(btn.idx+1)+"☆".repeat(7-btn.idx);
+    ctx.fillStyle="#fa0"; ctx.font="11px sans-serif";
+    ctx.fillText(stars.slice(0,8),btn.x+btn.w/2,btn.y+72);
+    ctx.fillStyle="#666"; ctx.font="10px sans-serif";
+    ctx.fillText("Boss: "+LEVELS[btn.idx].bossName,btn.x+btn.w/2,btn.y+92);
+  });
+  ctx.textAlign="left";
+}
+
+// ─── BOSS WARNING ─────────────────────────────────────────────────────────────
+function drawBossWarning(){
+  drawStars();
+  const flash=Math.floor(performance.now()/300)%2===0;
+  ctx.textAlign="center";
+  if(flash){
+    ctx.fillStyle="#f00"; ctx.font="bold 36px sans-serif";
+    ctx.shadowColor="#f00"; ctx.shadowBlur=20;
+    ctx.fillText("⚠ BOSS INCOMING ⚠",200,280);
+    ctx.shadowBlur=0;
+  }
+  ctx.fillStyle="#fff"; ctx.font="bold 20px sans-serif";
+  ctx.fillText(LEVELS[currentLevel].bossName,200,330);
+  ctx.fillStyle="#aaa"; ctx.font="14px sans-serif";
+  ctx.fillText("Prepare yourself...",200,360);
+  ctx.textAlign="left";
+}
+
+// ─── BOSS SYSTEM ─────────────────────────────────────────────────────────────
+function getBossPattern(li){
+  const fire=(shots)=>{
+    const mx=boss.x+boss.w/2, by=boss.y+boss.h;
+    shots.forEach(s=>bullets.push({x:mx+(s.ox||0),y:by,type:"enemy",vx:s.vx,vy:s.vy}));
+  };
+  const spread3=(sp)=>[{vx:-1.6,vy:sp},{vx:0,vy:sp},{vx:1.6,vy:sp}];
+  const spread5=(sp)=>[{vx:-3,vy:sp-1},{vx:-1.5,vy:sp},{vx:0,vy:sp},{vx:1.5,vy:sp},{vx:3,vy:sp-1}];
+  const aimed=()=>{const dx=ship.x-(boss.x+boss.w/2),dy=ship.y-(boss.y+boss.h),d=Math.sqrt(dx*dx+dy*dy)||1;return [{vx:dx/d*5.5,vy:dy/d*5.5}];};
+  const aimSpray=()=>{const dx=ship.x-(boss.x+boss.w/2),dy=ship.y-(boss.y+boss.h),d=Math.sqrt(dx*dx+dy*dy)||1,nx=dx/d,ny=dy/d,px=-ny,py=nx;return [{vx:(nx-px*0.45)*5,vy:(ny-py*0.45)*5},{vx:nx*5,vy:ny*5},{vx:(nx+px*0.45)*5,vy:(ny+py*0.45)*5}];};
+  const ring=(n,sp)=>{const s=[];for(let i=0;i<n;i++){const a=(i/n)*Math.PI*2;s.push({vx:Math.cos(a)*sp,vy:Math.sin(a)*sp});}return s;};
+  const wall=()=>[0,70,140,210,280,350].map(ox=>({ox:ox-(boss.x+boss.w/2),vx:0,vy:4.5}));
+  const laser=()=>[{vx:0,vy:4.5}];
+  const p=[
+    [{cd:160,fn:()=>fire(spread3(3.0))},{cd:130,fn:()=>fire(aimed())}],
+    [{cd:150,fn:()=>fire(spread5(2.8))},{cd:120,fn:()=>fire(aimSpray())}],
+    [{cd:180,fn:()=>fire(wall())},{cd:120,fn:()=>fire(aimed())},{cd:120,fn:()=>fire(aimed())}],
+    [{cd:110,fn:()=>fire(aimed())},{cd:110,fn:()=>fire(aimed())},{cd:150,fn:()=>fire(spread5(3.5))}],
+    [{cd:180,fn:()=>fire(ring(8,3.0))},{cd:110,fn:()=>fire(aimSpray())},{cd:110,fn:()=>fire(aimed())}],
+    [{cd:100,fn:()=>fire(aimSpray())},{cd:100,fn:()=>fire(aimSpray())},{cd:140,fn:()=>fire(ring(6,3.5))}],
+    [{cd:160,fn:()=>fire(ring(12,3.5))},{cd:90,fn:()=>fire(aimed())},{cd:90,fn:()=>fire(laser())},{cd:150,fn:()=>fire(wall())}],
+    [{cd:140,fn:()=>fire(ring(16,3.8))},{cd:80,fn:()=>fire(aimed())},{cd:95,fn:()=>fire(aimSpray())},{cd:140,fn:()=>fire(wall())},{cd:80,fn:()=>fire(laser())},{cd:80,fn:()=>fire(aimed())}],
+  ];
+  return p[li]||p[0];
+}
+
+function spawnBoss(){
+  if(spawnLoop){clearInterval(spawnLoop);spawnLoop=null;}
+  enemies=[];
+  const lvl=LEVELS[currentLevel];
+  const li=currentLevel;
+  boss={
+    x:160,y:70,w:80,h:60,
+    hp:lvl.bossHp,max:lvl.bossHp,
+    color:lvl.bossColor,name:lvl.bossName,
+    vx:0.9+li*0.15, moveTimer:0,
+    moveStyle:["side","side","wave","charge","dash","wave","charge","all"][li],
+    dashTarget:200, dashSpeed:0,
+    atkTimer:0, atkIdx:0,
+    atkPattern:null,
+    phase:1,
+  };
+  boss.atkPattern=getBossPattern(li);
+  bossPhase=1;
+  state="boss";
+  if(fireLoop)clearInterval(fireLoop);
+  fireLoop=setInterval(()=>{
+    if(state!=="boss")return;
+    bullets.push({x:ship.x,y:ship.y,type:"player"});
+    if(ship.level>=2)bullets.push({x:ship.x-12,y:ship.y,type:"player"});
+    if(ship.level>=3)bullets.push({x:ship.x+12,y:ship.y,type:"player"});
+    if(ship.level>=4){bullets.push({x:ship.x-22,y:ship.y,type:"player"});bullets.push({x:ship.x+22,y:ship.y,type:"player"});}
+  },Math.max(60,250-(ship.level-1)*40));
+}
+
+function updateBoss(){
+  if(!boss)return;
+  if(boss.hp<=boss.max/2 && bossPhase===1){
+    bossPhase=2;
+    boss.vx=Math.sign(boss.vx||1)*(Math.abs(boss.vx)*1.2);
+    boss.atkPattern.forEach(a=>a.cd=Math.max(60,Math.floor(a.cd*0.82)));
+  }
+  boss.moveTimer++;
+  const style=boss.moveStyle;
+  if(style==="side"||style==="all"){
+    boss.x+=boss.vx;
+    if(boss.x<10||boss.x>310){boss.vx*=-1; boss.x=Math.max(10,Math.min(310,boss.x));}
+    boss.y=70+Math.sin(performance.now()/900)*(bossPhase===2?35:20);
+  }
+  if(style==="wave"||style==="all"){
+    boss.x+=boss.vx;
+    if(boss.x<10||boss.x>310){boss.vx*=-1; boss.x=Math.max(10,Math.min(310,boss.x));}
+    boss.y=70+Math.sin(boss.moveTimer/18)*50;
+  }
+  if(style==="charge"){
+    if(boss.moveTimer%120===0){
+      boss.dashTarget=Math.max(10,Math.min(310,ship.x-boss.w/2));
+      boss.dashSpeed=(boss.dashTarget-boss.x)/18;
+    }
+    if(Math.abs(boss.x-boss.dashTarget)>3) boss.x+=boss.dashSpeed;
+    boss.y=70+Math.sin(performance.now()/700)*25;
+    if(boss.moveTimer%120<60){boss.x+=boss.vx*0.5; if(boss.x<10||boss.x>310)boss.vx*=-1;}
+  }
+  if(style==="dash"){
+    boss.x+=boss.vx;
+    if(boss.x<10||boss.x>310){boss.vx*=-1; boss.x=Math.max(10,Math.min(310,boss.x));}
+    boss.y=Math.max(20,Math.min(200, 110+Math.sin(boss.moveTimer/22)*60));
+  }
+  boss.atkTimer++;
+  const atk=boss.atkPattern[boss.atkIdx];
+  if(boss.atkTimer>=atk.cd){ boss.atkTimer=0; atk.fn(); boss.atkIdx=(boss.atkIdx+1)%boss.atkPattern.length; }
+
+  bullets.forEach(b=>{
+    if(!invincible&&!respawning&&b.type==="enemy"&&Math.abs(b.x-ship.x)<16&&Math.abs(b.y-ship.y)<16) endGame();
+  });
+  bullets.forEach(b=>{
+    if(b.type==="player"&&b.x>boss.x&&b.x<boss.x+boss.w&&b.y>boss.y&&b.y<boss.y+boss.h){ boss.hp--; b.y=-999; }
+  });
+  if(boss.hp<=0){levelClear();return;}
+  if(!invincible&&!respawning&&ship.x>boss.x-10&&ship.x<boss.x+boss.w+10&&ship.y>boss.y-10&&ship.y<boss.y+boss.h+10) endGame();
+}
+
+// ─── RETRO BOSS ALIEN TEXTURES ───────────────────────────────────────────────
+function drawBossAlien(li, bx, by, bw, bh, col, phase){
+  const t=performance.now();
+  const pulse=0.7+Math.sin(t/300)*0.3;
+  const cx=bx+bw/2, cy=by+bh/2;
+  const flash=phase===2&&Math.floor(t/200)%2===0;
+  const c1=flash?"#fff":col;
+  ctx.save();
+  ctx.shadowColor=col; ctx.shadowBlur=phase===2?30:15;
+
+  if(li===0){
+    // ── Grunt Leader: big-jawed soldier beetle ──
+    ctx.fillStyle="#1a0000"; ctx.strokeStyle=c1; ctx.lineWidth=2;
+    ctx.beginPath();
+    ctx.moveTo(cx,by+4); ctx.lineTo(bx+bw-4,by+14); ctx.lineTo(bx+bw-2,by+bh-8);
+    ctx.lineTo(cx,by+bh+2); ctx.lineTo(bx+2,by+bh-8); ctx.lineTo(bx+4,by+14);
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+    // head dome
+    ctx.fillStyle=c1; ctx.globalAlpha=0.7;
+    ctx.beginPath(); ctx.ellipse(cx,by+18,18,12,0,0,Math.PI*2); ctx.fill();
+    ctx.globalAlpha=1;
+    // compound eyes
+    for(let s=[-1,1];s.length;){const sx=s.shift();
+      const grd=ctx.createRadialGradient(cx+sx*10,by+16,1,cx+sx*10,by+16,6);
+      grd.addColorStop(0,"#ff0"); grd.addColorStop(0.5,c1); grd.addColorStop(1,"#000");
+      ctx.fillStyle=grd; ctx.beginPath(); ctx.arc(cx+sx*10,by+16,6,0,Math.PI*2); ctx.fill();
+    }
+    // mandibles
+    ctx.strokeStyle=c1; ctx.lineWidth=3;
+    ctx.beginPath(); ctx.moveTo(cx-8,by+28); ctx.lineTo(bx+2,by+bh-4); ctx.lineTo(bx+8,by+bh+2); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(cx+8,by+28); ctx.lineTo(bx+bw-2,by+bh-4); ctx.lineTo(bx+bw-8,by+bh+2); ctx.stroke();
+    // armour ridges
+    ctx.strokeStyle="rgba(255,100,100,0.5)"; ctx.lineWidth=1.5;
+    for(let i=0;i<4;i++){ctx.beginPath();ctx.moveTo(bx+8+i*5,by+30+i*4);ctx.lineTo(bx+bw-8-i*5,by+30+i*4);ctx.stroke();}
+    // antennae
+    ctx.strokeStyle=c1; ctx.lineWidth=2;
+    ctx.beginPath(); ctx.moveTo(cx-6,by+8); ctx.lineTo(bx+10,by-6); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(cx+6,by+8); ctx.lineTo(bx+bw-10,by-6); ctx.stroke();
+    ctx.fillStyle=c1;
+    ctx.beginPath();ctx.arc(bx+10,by-6,3,0,Math.PI*2);ctx.fill();
+    ctx.beginPath();ctx.arc(bx+bw-10,by-6,3,0,Math.PI*2);ctx.fill();
+
+  } else if(li===1){
+    // ── Nebula Warden: glowing jellyfish alien ──
+    const drift=Math.sin(t/600)*4;
+    ctx.fillStyle="#0a0020"; ctx.strokeStyle=c1; ctx.lineWidth=2;
+    ctx.beginPath(); ctx.ellipse(cx,by+bh*0.4+drift,bw*0.45,bh*0.38,0,0,Math.PI*2); ctx.fill(); ctx.stroke();
+    // inner glow layers
+    for(let r=3;r>=1;r--){
+      const grd=ctx.createRadialGradient(cx,by+bh*0.35+drift,2,cx,by+bh*0.35+drift,bw*0.35*r/3);
+      grd.addColorStop(0,"rgba(255,255,255,0.9)"); grd.addColorStop(0.4,col+"cc"); grd.addColorStop(1,"transparent");
+      ctx.fillStyle=grd; ctx.globalAlpha=0.4/r;
+      ctx.beginPath(); ctx.ellipse(cx,by+bh*0.35+drift,bw*0.35*r/3,bh*0.3*r/3,0,0,Math.PI*2); ctx.fill();
+    }
+    ctx.globalAlpha=1;
+    // tentacles
+    ctx.strokeStyle=c1; ctx.lineWidth=2;
+    for(let i=0;i<7;i++){
+      const tx=bx+8+i*(bw-16)/6;
+      const amp=8+i%3*4;
+      ctx.beginPath(); ctx.moveTo(tx,by+bh*0.72+drift);
+      for(let s=0;s<5;s++){ctx.lineTo(tx+(Math.sin(t/400+i+s)*amp*(s%2?1:-1)),by+bh*0.72+s*7+drift);}
+      ctx.stroke();
+    }
+    // eyes cluster
+    const eyePos=[[-14,-2],[0,-8],[14,-2],[-7,8],[7,8]];
+    eyePos.forEach(([ex,ey],i)=>{
+      ctx.fillStyle="#000"; ctx.beginPath(); ctx.arc(cx+ex,by+bh*0.38+ey+drift,3.5,0,Math.PI*2); ctx.fill();
+      ctx.fillStyle=i%2===0?"#0ff":"#f0f"; ctx.beginPath(); ctx.arc(cx+ex,by+bh*0.38+ey+drift,2,0,Math.PI*2); ctx.fill();
+    });
+
+  } else if(li===2){
+    // ── Frost Titan: crystalline ice golem ──
+    ctx.fillStyle="#001a33"; ctx.strokeStyle=c1; ctx.lineWidth=2;
+    // hexagonal crystal body
+    const pts=[];
+    for(let i=0;i<6;i++){const a=i*Math.PI/3-Math.PI/6;pts.push([cx+Math.cos(a)*bw*0.46,cy+Math.sin(a)*bh*0.46]);}
+    ctx.beginPath(); ctx.moveTo(pts[0][0],pts[0][1]);
+    pts.forEach(p=>ctx.lineTo(p[0],p[1])); ctx.closePath(); ctx.fill(); ctx.stroke();
+    // internal crystal facets
+    ctx.strokeStyle="rgba(180,240,255,0.5)"; ctx.lineWidth=1;
+    pts.forEach((p,i)=>{ctx.beginPath();ctx.moveTo(cx,cy);ctx.lineTo(p[0],p[1]);ctx.stroke();});
+    // inner glow
+    const grd=ctx.createRadialGradient(cx,cy,2,cx,cy,bw*0.3);
+    grd.addColorStop(0,"#fff"); grd.addColorStop(0.4,c1); grd.addColorStop(1,"transparent");
+    ctx.fillStyle=grd; ctx.globalAlpha=0.6;
+    ctx.beginPath(); ctx.arc(cx,cy,bw*0.3,0,Math.PI*2); ctx.fill(); ctx.globalAlpha=1;
+    // icy eyes
+    ctx.fillStyle="#001133";
+    ctx.beginPath(); ctx.ellipse(cx-12,by+20,7,5,0,0,Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(cx+12,by+20,7,5,0,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle="#88eeff";
+    ctx.beginPath(); ctx.ellipse(cx-12,by+19,4,3,0,0,Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(cx+12,by+19,4,3,0,0,Math.PI*2); ctx.fill();
+    // ice spikes on top
+    ctx.fillStyle=c1; ctx.strokeStyle="#fff"; ctx.lineWidth=1;
+    [-20,-10,0,10,20].forEach((ox,i)=>{
+      const h2=12+Math.abs(ox)/2;
+      ctx.beginPath(); ctx.moveTo(cx+ox,by-2); ctx.lineTo(cx+ox-5,by+h2); ctx.lineTo(cx+ox+5,by+h2); ctx.closePath(); ctx.fill(); ctx.stroke();
+    });
+
+  } else if(li===3){
+    // ── Magma Beast: lava-armoured dragon skull ──
+    const lavaFlicker=Math.sin(t/150)*0.3+0.7;
+    ctx.fillStyle="#1a0500"; ctx.strokeStyle=c1; ctx.lineWidth=2.5;
+    ctx.beginPath();
+    ctx.moveTo(cx,by+2); ctx.lineTo(bx+bw-2,by+16); ctx.lineTo(bx+bw,by+bh-10);
+    ctx.lineTo(bx+bw-10,by+bh); ctx.lineTo(bx+10,by+bh); ctx.lineTo(bx,by+bh-10);
+    ctx.lineTo(bx+2,by+16); ctx.closePath(); ctx.fill(); ctx.stroke();
+    // lava cracks
+    const crackGrd=ctx.createLinearGradient(bx,by,bx+bw,by+bh);
+    crackGrd.addColorStop(0,"#ff4400"); crackGrd.addColorStop(0.5,"#ff8800"); crackGrd.addColorStop(1,"#ff2200");
+    ctx.strokeStyle=crackGrd; ctx.lineWidth=2; ctx.globalAlpha=lavaFlicker*0.8;
+    [[cx-15,by+25,cx+5,by+40],[cx+10,by+22,cx-5,by+48],[cx-5,by+35,cx+20,by+55],
+     [cx-20,by+42,cx+15,by+58]].forEach(([x1,y1,x2,y2])=>{
+      ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke();
+    });
+    ctx.globalAlpha=1;
+    // glowing molten core
+    const mGrd=ctx.createRadialGradient(cx,cy,2,cx,cy,20);
+    mGrd.addColorStop(0,"#fff8"); mGrd.addColorStop(0.3,"#ff8800cc"); mGrd.addColorStop(1,"transparent");
+    ctx.fillStyle=mGrd; ctx.beginPath(); ctx.arc(cx,cy,20*lavaFlicker,0,Math.PI*2); ctx.fill();
+    // eyes (fiery)
+    [[-14,by+18],[14,by+18]].forEach(([ox,ey])=>{
+      const eg=ctx.createRadialGradient(cx+ox,ey,1,cx+ox,ey,7);
+      eg.addColorStop(0,"#fff"); eg.addColorStop(0.5,"#ff8800"); eg.addColorStop(1,"#f00");
+      ctx.fillStyle=eg; ctx.beginPath(); ctx.arc(cx+ox,ey,7,0,Math.PI*2); ctx.fill();
+    });
+    // horns
+    ctx.fillStyle=c1; ctx.strokeStyle="#ff4400"; ctx.lineWidth=1.5;
+    [[-18,by+4],[-8,by],[8,by],[18,by+4]].forEach(([ox,hy])=>{
+      ctx.beginPath(); ctx.moveTo(cx+ox,hy); ctx.lineTo(cx+ox-4,hy-12); ctx.lineTo(cx+ox+4,hy-12); ctx.closePath(); ctx.fill(); ctx.stroke();
+    });
+
+  } else if(li===4){
+    // ── Void Phantom: spectral cosmic horror ──
+    const warp=Math.sin(t/400);
+    ctx.globalAlpha=0.18;
+    for(let ring=3;ring>=1;ring--){
+      ctx.fillStyle=c1;
+      ctx.beginPath(); ctx.ellipse(cx,cy,bw*0.5*ring/3+warp*5,bh*0.5*ring/3,0,0,Math.PI*2); ctx.fill();
+    }
+    ctx.globalAlpha=1;
+    // void body
+    const vGrd=ctx.createRadialGradient(cx,cy,4,cx,cy,bw*0.42);
+    vGrd.addColorStop(0,"#111"); vGrd.addColorStop(0.6,col+"88"); vGrd.addColorStop(1,"transparent");
+    ctx.fillStyle=vGrd; ctx.beginPath(); ctx.ellipse(cx,cy,bw*0.42+warp*3,bh*0.42,0,0,Math.PI*2); ctx.fill();
+    ctx.strokeStyle=c1; ctx.lineWidth=2;
+    ctx.beginPath(); ctx.ellipse(cx,cy,bw*0.44,bh*0.44,0,0,Math.PI*2); ctx.stroke();
+    // spiraling eye ring
+    for(let i=0;i<8;i++){
+      const a=i*Math.PI/4+t/800;
+      const ex=cx+Math.cos(a)*18, ey=cy+Math.sin(a)*15;
+      ctx.fillStyle=i%2===0?"#fff":c1;
+      ctx.beginPath(); ctx.arc(ex,ey,2.5,0,Math.PI*2); ctx.fill();
+    }
+    // central void eye
+    const cg=ctx.createRadialGradient(cx,cy,1,cx,cy,12);
+    cg.addColorStop(0,"#fff"); cg.addColorStop(0.35,c1); cg.addColorStop(0.8,"#000"); cg.addColorStop(1,"transparent");
+    ctx.fillStyle=cg; ctx.beginPath(); ctx.arc(cx,cy,12,0,Math.PI*2); ctx.fill();
+    // void tendrils
+    ctx.strokeStyle=c1; ctx.lineWidth=1.5; ctx.globalAlpha=0.7;
+    for(let i=0;i<6;i++){
+      const a=i*Math.PI/3+t/1200;
+      ctx.beginPath(); ctx.moveTo(cx+Math.cos(a)*22,cy+Math.sin(a)*20);
+      ctx.lineTo(cx+Math.cos(a)*bw*0.5,cy+Math.sin(a)*bh*0.5); ctx.stroke();
+    }
+    ctx.globalAlpha=1;
+
+  } else if(li===5){
+    // ── Storm Colossus: electric titan with lightning cage ──
+    const zap=Math.floor(t/120)%3;
+    ctx.fillStyle="#0a0a00"; ctx.strokeStyle=c1; ctx.lineWidth=2.5;
+    // main body — armoured hexplate
+    ctx.beginPath();
+    ctx.moveTo(cx,by); ctx.lineTo(bx+bw-5,by+bh*0.3); ctx.lineTo(bx+bw,by+bh*0.7);
+    ctx.lineTo(cx,by+bh+4); ctx.lineTo(bx,by+bh*0.7); ctx.lineTo(bx+5,by+bh*0.3);
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+    // electric arc body
+    ctx.strokeStyle=zap===0?"#fff":zap===1?"#ff0":c1; ctx.lineWidth=1.5; ctx.globalAlpha=0.8;
+    for(let seg=0;seg<6;seg++){
+      ctx.beginPath(); ctx.moveTo(bx+6+seg*(bw-12)/5,by+bh*0.25);
+      for(let s=0;s<4;s++) ctx.lineTo(bx+6+seg*(bw-12)/5+(Math.random()*12-6),by+bh*0.25+s*bh*0.15);
+      ctx.stroke();
+    }
+    ctx.globalAlpha=1;
+    // core reactor
+    const rg=ctx.createRadialGradient(cx,cy,2,cx,cy,16);
+    rg.addColorStop(0,"#fff"); rg.addColorStop(0.5,c1); rg.addColorStop(1,"transparent");
+    ctx.fillStyle=rg; ctx.beginPath(); ctx.arc(cx,cy,16*pulse,0,Math.PI*2); ctx.fill();
+    // compound eye row
+    ctx.fillStyle="#000";
+    [-18,-8,2,12,22].forEach((ox,i)=>{
+      ctx.beginPath(); ctx.arc(cx+ox-2,by+18,4,0,Math.PI*2); ctx.fill();
+      ctx.fillStyle=i%2===0?"#ff0":c1; ctx.beginPath(); ctx.arc(cx+ox-2,by+17,2.5,0,Math.PI*2); ctx.fill();
+      ctx.fillStyle="#000";
+    });
+    // lightning horns
+    ctx.strokeStyle="#ff0"; ctx.lineWidth=2;
+    ctx.beginPath(); ctx.moveTo(cx-18,by+6); ctx.lineTo(cx-26,by-6); ctx.lineTo(cx-20,by-8); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(cx+18,by+6); ctx.lineTo(cx+26,by-6); ctx.lineTo(cx+20,by-8); ctx.stroke();
+
+  } else if(li===6){
+    // ── Inferno Reaper: skull-faced death god ──
+    const flicker2=0.8+Math.sin(t/100)*0.2;
+    ctx.fillStyle="#0d0000"; ctx.strokeStyle=c1; ctx.lineWidth=2.5;
+    // skull shape
+    ctx.beginPath();
+    ctx.arc(cx,by+bh*0.38,bw*0.38,Math.PI,0);
+    ctx.lineTo(bx+bw*0.78,by+bh*0.75); ctx.lineTo(bx+bw*0.65,by+bh);
+    ctx.lineTo(bx+bw*0.35,by+bh); ctx.lineTo(bx+bw*0.22,by+bh*0.75);
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+    // eye sockets (glowing)
+    [-12,12].forEach(ox=>{
+      const sg=ctx.createRadialGradient(cx+ox,by+bh*0.34,1,cx+ox,by+bh*0.34,9);
+      sg.addColorStop(0,"#fff"); sg.addColorStop(0.3,c1); sg.addColorStop(0.7,"#f44"); sg.addColorStop(1,"#300");
+      ctx.fillStyle=sg; ctx.beginPath(); ctx.ellipse(cx+ox,by+bh*0.34,9,8,0,0,Math.PI*2); ctx.fill();
+    });
+    // nasal cavity
+    ctx.fillStyle="#300"; ctx.beginPath(); ctx.arc(cx,by+bh*0.52,4,0,Math.PI*2); ctx.fill();
+    // teeth
+    ctx.fillStyle="#ddd"; ctx.strokeStyle=c1; ctx.lineWidth=1;
+    for(let i=0;i<5;i++){
+      ctx.beginPath(); ctx.moveTo(cx-18+i*9,by+bh*0.72); ctx.lineTo(cx-14+i*9,by+bh*0.86); ctx.lineTo(cx-10+i*9,by+bh*0.72); ctx.closePath(); ctx.fill(); ctx.stroke();
+    }
+    // flame aura
+    ctx.globalAlpha=flicker2*0.5;
+    const fg=ctx.createRadialGradient(cx,cy,5,cx,cy,bw*0.55);
+    fg.addColorStop(0,"#ff8800"); fg.addColorStop(0.6,"#f44"); fg.addColorStop(1,"transparent");
+    ctx.fillStyle=fg; ctx.beginPath(); ctx.arc(cx,cy,bw*0.55,0,Math.PI*2); ctx.fill();
+    ctx.globalAlpha=1;
+    // scythe blades extending from sides
+    ctx.strokeStyle=c1; ctx.lineWidth=3;
+    ctx.beginPath(); ctx.moveTo(bx,cy); ctx.quadraticCurveTo(bx-18,cy-20,bx-8,cy-35); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(bx+bw,cy); ctx.quadraticCurveTo(bx+bw+18,cy-20,bx+bw+8,cy-35); ctx.stroke();
+
+  } else {
+    // ── THE NEXUS GOD (li===7): cosmic multi-eyed god-horror ──
+    const spin=t/600;
+    // Outer energy rings
+    for(let r=3;r>=1;r--){
+      ctx.globalAlpha=0.15*r*pulse;
+      ctx.strokeStyle=r%2===0?"#fff":c1; ctx.lineWidth=r+1;
+      ctx.beginPath(); ctx.arc(cx,cy,bw*0.5+r*8,spin+r,spin+r+Math.PI*1.7); ctx.stroke();
+    }
+    ctx.globalAlpha=1;
+    // dark void body
+    const bg=ctx.createRadialGradient(cx,cy,4,cx,cy,bw*0.46);
+    bg.addColorStop(0,"#111"); bg.addColorStop(0.5,"#221133"); bg.addColorStop(1,"transparent");
+    ctx.fillStyle=bg; ctx.beginPath(); ctx.ellipse(cx,cy,bw*0.46,bh*0.46,spin*0.1,0,Math.PI*2); ctx.fill();
+    ctx.strokeStyle=c1; ctx.lineWidth=2.5;
+    ctx.beginPath(); ctx.ellipse(cx,cy,bw*0.46,bh*0.46,spin*0.1,0,Math.PI*2); ctx.stroke();
+    // 8 orbiting eyes
+    for(let i=0;i<8;i++){
+      const a=i*Math.PI/4+spin;
+      const ex=cx+Math.cos(a)*bw*0.32, ey=cy+Math.sin(a)*bh*0.28;
+      const eg=ctx.createRadialGradient(ex,ey,1,ex,ey,6);
+      eg.addColorStop(0,"#fff"); eg.addColorStop(0.5,c1); eg.addColorStop(1,"#000");
+      ctx.fillStyle=eg; ctx.beginPath(); ctx.arc(ex,ey,6,0,Math.PI*2); ctx.fill();
+      ctx.strokeStyle="rgba(255,255,255,0.5)"; ctx.lineWidth=1;
+      ctx.beginPath(); ctx.arc(ex,ey,6,0,Math.PI*2); ctx.stroke();
+    }
+    // central god-eye
+    const ce=ctx.createRadialGradient(cx,cy,2,cx,cy,16);
+    ce.addColorStop(0,"#fff"); ce.addColorStop(0.3,c1); ce.addColorStop(0.7,"#220033"); ce.addColorStop(1,"transparent");
+    ctx.fillStyle=ce; ctx.beginPath(); ctx.arc(cx,cy,16*pulse,0,Math.PI*2); ctx.fill();
+    // spiked crown
+    ctx.fillStyle=c1; ctx.strokeStyle="#fff"; ctx.lineWidth=1.5;
+    for(let i=0;i<9;i++){
+      const a=i*Math.PI*2/9-Math.PI/2+spin*0.5;
+      const r1=bw*0.48, r2=bw*0.58;
+      ctx.beginPath();
+      ctx.moveTo(cx+Math.cos(a-0.15)*r1,cy+Math.sin(a-0.15)*r1);
+      ctx.lineTo(cx+Math.cos(a)*r2,cy+Math.sin(a)*r2);
+      ctx.lineTo(cx+Math.cos(a+0.15)*r1,cy+Math.sin(a+0.15)*r1);
+      ctx.closePath(); ctx.fill(); ctx.stroke();
+    }
+  }
+  ctx.shadowBlur=0;
+  ctx.restore();
+}
+
+function drawBoss(){
+  if(!boss)return;
+  drawBossAlien(currentLevel, boss.x, boss.y, boss.w, boss.h, boss.color, bossPhase);
+  // HP bar
+  ctx.fillStyle="#400"; ctx.fillRect(10,8,380,10);
+  const hpFrac=boss.hp/boss.max;
+  ctx.fillStyle=hpFrac>0.5?"#4f4":hpFrac>0.25?"#fa0":"#f44";
+  ctx.fillRect(10,8,380*hpFrac,10);
+  ctx.strokeStyle="#888"; ctx.lineWidth=1; ctx.strokeRect(10,8,380,10);
+  ctx.fillStyle="#fff"; ctx.font="bold 11px sans-serif"; ctx.textAlign="center";
+  ctx.fillText(boss.name+(bossPhase===2?" ✦ PHASE 2":""),200,7);
+  ctx.textAlign="left";
+}
+
+// ─── LEVEL CLEAR ──────────────────────────────────────────────────────────────
+function levelClear(){
+  if(spawnLoop){clearInterval(spawnLoop);spawnLoop=null;}
+  if(fireLoop){clearInterval(fireLoop);fireLoop=null;}
+  boss=null; enemies=[]; bullets=[];
+  state="levelclear";
+}
+
+function drawLevelClear(){
+  drawStars();
+  const lvl=LEVELS[currentLevel];
+  ctx.textAlign="center";
+  ctx.fillStyle=lvl.color; ctx.font="bold 32px sans-serif";
+  ctx.shadowColor=lvl.color; ctx.shadowBlur=15;
+  ctx.fillText("LEVEL COMPLETE!",200,200);
+  ctx.shadowBlur=0;
+  ctx.fillStyle="#fff"; ctx.font="18px sans-serif";
+  ctx.fillText(lvl.name+" cleared",200,245);
+  ctx.fillText("Score: "+score,200,278);
+  if(currentLevel+1<LEVELS.length){
+    const next=LEVELS[currentLevel+1];
+    ctx.fillStyle="#aaa"; ctx.font="14px sans-serif";
+    ctx.fillText("Next: Level "+(currentLevel+2)+" — "+next.name,200,310);
+    drawContinueBtn("NEXT LEVEL ▶");
+  } else {
+    drawContinueBtn("FINISH ▶");
+  }
+  ctx.textAlign="left";
+}
+
+function drawContinueBtn(label){
+  ctx.fillStyle="#0a0"; ctx.beginPath(); ctx.roundRect(120,380,160,45,10); ctx.fill();
+  ctx.strokeStyle="#0f0"; ctx.lineWidth=2; ctx.beginPath(); ctx.roundRect(120,380,160,45,10); ctx.stroke();
+  ctx.fillStyle="#fff"; ctx.font="bold 16px sans-serif"; ctx.textAlign="center";
+  ctx.fillText(label,200,408);
+}
+
+// ─── LIVES / RESPAWN / GAME OVER ─────────────────────────────────────────────
+function loseLife(){
+  if(invincible||respawning) return;
+  lives--;
+  if(lives<=0){
+    if(spawnLoop){clearInterval(spawnLoop);spawnLoop=null;}
+    if(fireLoop){clearInterval(fireLoop);fireLoop=null;}
+    state="gameover"; return;
+  }
+  respawning=true; respawnTimer=180;
+  bullets=bullets.filter(b=>b.type!=="enemy");
+}
+
+function doRespawn(){
+  respawning=false;
+  ship.x=200; ship.y=565;
+  invincible=true; invincibleTimer=120;
+}
+
+function endGame(){ loseLife(); }
+
+function drawGameOver(){
+  drawStars();
+  ctx.textAlign="center";
+  ctx.fillStyle="#f44"; ctx.font="bold 38px sans-serif";
+  ctx.shadowColor="#f00"; ctx.shadowBlur=20;
+  ctx.fillText("GAME OVER",200,220);
+  ctx.shadowBlur=0;
+  ctx.fillStyle="#fff"; ctx.font="18px sans-serif";
+  ctx.fillText("Score: "+score,200,265);
+  ctx.fillStyle="#aaa"; ctx.font="14px sans-serif";
+  ctx.fillText("Reached: "+LEVELS[currentLevel].name,200,295);
+  drawMenuBtn(); ctx.textAlign="left";
+}
+
+function drawVictory(){
+  drawStars();
+  ctx.textAlign="center";
+  ctx.fillStyle="#ff0"; ctx.font="bold 30px sans-serif";
+  ctx.shadowColor="#ff0"; ctx.shadowBlur=20;
+  ctx.fillText("🏆 YOU WIN! 🏆",200,200);
+  ctx.shadowBlur=0;
+  ctx.fillStyle="#fff"; ctx.font="18px sans-serif";
+  ctx.fillText("All 8 levels conquered!",200,245);
+  ctx.fillText("Final Score: "+score,200,278);
+  ctx.fillStyle="#aaa"; ctx.font="13px sans-serif";
+  ctx.fillText("You defeated the Nexus God.",200,308);
+  drawMenuBtn(); ctx.textAlign="left";
+}
+
+function drawMenuBtn(){
+  ctx.fillStyle="#006"; ctx.beginPath(); ctx.roundRect(120,380,160,45,10); ctx.fill();
+  ctx.strokeStyle="#44f"; ctx.lineWidth=2; ctx.beginPath(); ctx.roundRect(120,380,160,45,10); ctx.stroke();
+  ctx.fillStyle="#fff"; ctx.font="bold 16px sans-serif"; ctx.textAlign="center";
+  ctx.fillText("↩ MAIN MENU",200,408);
+}
+
+// ─── MAIN LOOP ────────────────────────────────────────────────────────────────
+function loop(){
+  ctx.clearRect(0,0,W,H);
+
+  if(state==="menu")       { drawMenu(); requestAnimationFrame(loop); return; }
+  if(state==="gameover")   { drawGameOver(); requestAnimationFrame(loop); return; }
+  if(state==="victory")    { drawVictory(); requestAnimationFrame(loop); return; }
+  if(state==="levelclear") { drawLevelClear(); requestAnimationFrame(loop); return; }
+
+  if(state==="bosswarning"){
+    drawStars(); drawBossWarning();
+    bossWarningTimer++;
+    if(bossWarningTimer>120){ bossWarningTimer=0; spawnBoss(); }
+    requestAnimationFrame(loop); return;
+  }
+
+  drawStars();
+  drawShip();
+
+  bullets.forEach(b=>{
+    if(b.type==="player"){ b.y-=9; ctx.fillStyle="yellow"; ctx.fillRect(b.x-2,b.y,4,10); }
+    else { b.x+=(b.vx||0); b.y+=(b.vy||4); ctx.fillStyle="#f88"; ctx.fillRect(b.x-3,b.y,6,12); }
+  });
+  bullets=bullets.filter(b=>b.y>-20&&b.y<680&&b.x>-20&&b.x<420);
+
+  if(state==="boss"){ updateBoss(); drawBoss(); }
+
+  if(state==="game"){
+    enemies.forEach(e=>{
+      e.y+=e.s;
+      drawEnemy(e);
+      if(!invincible&&!respawning&&Math.abs((e.x+e.w/2)-ship.x)<(e.w/2+12)&&Math.abs((e.y+e.h/2)-ship.y)<(e.h/2+12)) endGame();
+    });
+    enemies=enemies.filter(e=>{
+      let dead=false;
+      bullets.forEach(b=>{
+        if(b.type==="player"&&b.x>e.x&&b.x<e.x+e.w&&b.y>e.y&&b.y<e.y+e.h){
+          e.hp--; b.y=-999;
+          if(e.hp<=0){ dead=true; score+=e.max; kills++; }
+        }
+      });
+      return !dead && e.y<700;
+    });
+    const lvl=LEVELS[currentLevel];
+    if(kills>=lvl.killsNeeded){
+      kills=0;
+      if(spawnLoop){clearInterval(spawnLoop);spawnLoop=null;}
+      state="bosswarning";
+    }
+  }
+
+  if(respawning){ respawnTimer--; if(respawnTimer<=0) doRespawn(); }
+  if(invincible){ invincibleTimer--; if(invincibleTimer<=0) invincible=false; }
+
+  drawHUD();
+  if(state==="game"||state==="boss") drawUpgradeBtn();
+  requestAnimationFrame(loop);
+}
+
+loop();
+
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js');
+}
+</script>
+</body>
+</html>
